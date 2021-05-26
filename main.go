@@ -8,7 +8,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
+	"telegram-bot/weather"
 	"time"
 
 	"github.com/robfig/cron/v3"
@@ -96,6 +99,35 @@ func main() {
 		_, err = b.Send(m.Chat, string(body))
 		if err != nil {
 			fmt.Println(err.Error())
+		}
+	})
+
+	b.Handle("/weather", func(m *tb.Message) {
+		code := 101250105
+		var err error
+		if strings.TrimSpace(m.Payload) != "" {
+			_code, err := strconv.Atoi(m.Payload)
+			if err != nil {
+				if _, err = b.Send(m.Chat, "错误的城市编码"); err != nil {
+					log.Println(err.Error())
+				}
+				_code = 101250105
+			}
+			code = _code
+		}
+
+		data := weather.Get(strconv.Itoa(code))
+		if data == nil {
+			if _, err = b.Send(m.Chat, "查询失败"); err != nil {
+				log.Println(err.Error())
+			}
+			return
+		}
+		md := fmt.Sprintf("地区:%s\n时间:%s %s\n气温:%s℃\n相对湿度:%s\n天气:%s\n风向:%s\n风速:%s\npm2\\.5:%s",
+			data.Cityname, strings.ReplaceAll(strings.ReplaceAll(data.Date, "(", "\\("), ")", "\\)"), data.Time, data.Temp, data.SD, data.Weather, data.Wd, data.Ws, data.AqiPm25)
+
+		if _, err = b.Send(m.Chat, md, &tb.SendOptions{ParseMode: tb.ModeMarkdownV2}); err != nil {
+			log.Println(err.Error())
 		}
 	})
 
