@@ -19,12 +19,12 @@ import (
 	tb "gopkg.in/tucnak/telebot.v2"
 )
 
-var domain = "https://imgs.zhxiao1124.design"
+var domain = "https://imgs.zhxiao1124.cn"
 var pics []string
 
 const ChatID = "-380625611"
 
-var c = cron.New(cron.WithSeconds())
+var c = cron.New()
 
 func init() {
 	rand_.Seed(time.Now().UnixNano())
@@ -53,7 +53,7 @@ func getpicuris(count int) []*tb.Photo {
 		GetPics()
 	}
 	for i := 0; i < count; i++ {
-		uri := fmt.Sprintf("http://imgs.zhxiao1124.design/static/%s", pics[0])
+		uri := fmt.Sprintf(domain+"/static/%s", pics[0])
 		res = append(res, &tb.Photo{File: tb.FromURL(uri)})
 		pics = pics[1:]
 		log.Println(uri)
@@ -69,12 +69,11 @@ func main() {
 		Token:  "1857698955:AAFuo00nKY0zYd9bVC0jeL5LiydJl8puoK0",
 		Poller: &tb.LongPoller{Timeout: 10 * time.Second},
 	})
-
+	//curl -F "url=" https://api.telegram.org/bot1857698955:AAFuo00nKY0zYd9bVC0jeL5LiydJl8puoK0/setWebhook
 	if err != nil {
 		log.Fatal(err)
 		return
 	}
-
 	b.Handle("/hello", func(m *tb.Message) {
 		switch m.Payload {
 		case "bitch":
@@ -155,7 +154,21 @@ func main() {
 		// incoming inline queries
 	})
 
-	c.AddFunc("0 0 * * * ?", func() {
+	c.AddFunc("@hourly", func() {
+		c_, err := b.ChatByID(ChatID)
+		if err != nil {
+			log.Fatalln(err.Error())
+		}
+		var cfg tb.Album
+		for _, v := range getpicuris(4) {
+			cfg = append(cfg, v)
+		}
+		_, err = b.SendAlbum(c_, cfg)
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	})
+	c.AddFunc("30 18 * * 2-6", func() {
 		c_, err := b.ChatByID(ChatID)
 		if err != nil {
 			log.Fatalln(err.Error())
