@@ -22,9 +22,10 @@ import (
 var domain = "https://imgs.zhxiao1124.cn"
 var pics []string
 
-const ChatID = "-380625611"
+const ChatID = "-1001117396121"
 
 var c = cron.New()
+var b *tb.Bot
 
 func init() {
 	rand_.Seed(time.Now().UnixNano())
@@ -62,7 +63,8 @@ func getpicuris(count int) []*tb.Photo {
 }
 
 func main() {
-	b, err := tb.NewBot(tb.Settings{
+	var err error
+	b, err = tb.NewBot(tb.Settings{
 		// You can also set custom API URL.
 		// If field is empty it equals to "https://api.telegram.org".
 		// URL: "http://195.129.111.17:8012",
@@ -154,38 +156,11 @@ func main() {
 		// incoming inline queries
 	})
 
-	c.AddFunc("@hourly", func() {
-		c_, err := b.ChatByID(ChatID)
-		if err != nil {
-			log.Fatalln(err.Error())
-		}
-		var cfg tb.Album
-		for _, v := range getpicuris(4) {
-			cfg = append(cfg, v)
-		}
-		_, err = b.SendAlbum(c_, cfg)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-	})
-	c.AddFunc("30 18 * * 2-6", func() {
-		c_, err := b.ChatByID(ChatID)
-		if err != nil {
-			log.Fatalln(err.Error())
-		}
-		var cfg tb.Album
-		for _, v := range getpicuris(4) {
-			cfg = append(cfg, v)
-		}
-		_, err = b.SendAlbum(c_, cfg)
-		if err != nil {
-			fmt.Println(err.Error())
-		}
-	})
+	c.AddJob("@hourly", sendPic{Num: 4, b: b, chatId: ChatID})
+	c.AddJob("30 18 * * 2-6", sendPic{Num: 9, b: b, chatId: ChatID})
 	c.Start()
 	go b.Start()
 	fmt.Println("程序启动")
-
 	s := make(chan os.Signal, 1)
 	signal.Notify(s, os.Interrupt, syscall.SIGTERM)
 	<-s
@@ -194,12 +169,23 @@ func main() {
 	fmt.Println("\ngraceful shuwdown")
 }
 
-type TimingTask struct {
-	Bot    *tb.Bot
-	ChatID string
-	Func   func(TimingTask)
+type sendPic struct {
+	Num    int
+	b      *tb.Bot
+	chatId string
 }
 
-func (t TimingTask) Run() {
-	t.Func(t)
+func (s sendPic) Run() {
+	c_, err := s.b.ChatByID(s.chatId)
+	if err != nil {
+		log.Fatalln(err.Error())
+	}
+	var cfg tb.Album
+	for _, v := range getpicuris(s.Num) {
+		cfg = append(cfg, v)
+	}
+	_, err = s.b.SendAlbum(c_, cfg)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
 }
