@@ -31,21 +31,22 @@ func init() {
 	rand_.Seed(time.Now().UnixNano())
 }
 
-func GetPics() {
+func GetPics() error {
 	statusCode, body, err := fasthttp.Get(nil, domain+"/get")
 	if err != nil {
 		log.Println(err.Error())
-		return
+		return err
 	}
 	if statusCode == http.StatusOK {
 		if err := json.Unmarshal(body, &pics); err != nil {
 			log.Println(err.Error())
-			return
+			return err
 		}
 	}
 	rand_.Shuffle(len(pics), func(i, j int) {
 		pics[i], pics[j] = pics[j], pics[i]
 	})
+	return nil
 }
 
 func getpicuris(count int) []*tb.Photo {
@@ -95,9 +96,28 @@ func main() {
 		}
 	})
 
+	b.Handle("/reset", func(m *tb.Message) {
+		err := GetPics()
+		if err != nil {
+			_, err = b.Send(m.Chat, fmt.Sprintf("重新拉取失败:%s", err.Error()))
+		} else {
+			_, err = b.Send(m.Chat, fmt.Sprintf("重新拉取了%d张图片", len(pics)))
+		}
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	})
+
 	b.Handle("/count", func(m *tb.Message) {
 		_, body, _ := fasthttp.Get(nil, domain+"/getcount")
 		_, err = b.Send(m.Chat, string(body))
+		if err != nil {
+			fmt.Println(err.Error())
+		}
+	})
+
+	b.Handle("/cache", func(m *tb.Message) {
+		_, err = b.Send(m.Chat, len(pics))
 		if err != nil {
 			fmt.Println(err.Error())
 		}
@@ -157,7 +177,7 @@ func main() {
 	})
 
 	c.AddJob("@hourly", sendPic{Num: 4, b: b, chatId: ChatID})
-	c.AddJob("30 18 * * 2-6", sendPic{Num: 9, b: b, chatId: ChatID})
+	c.AddJob("30 18 * * 1-5", sendPic{Num: 6, b: b, chatId: ChatID})
 	c.Start()
 	go b.Start()
 	fmt.Println("程序启动")
