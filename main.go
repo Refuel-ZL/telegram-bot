@@ -20,7 +20,18 @@ import (
 )
 
 var domain = "https://imgs.zhxiao1124.cn"
-var pics []string
+
+type piclist struct {
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Format   string `json:"format"`
+	MIMEType string `json:"mimeType"`
+	Width    int64  `json:"width"`
+	Height   int64  `json:"height"`
+}
+
+var pics []piclist
 
 const ChatID = "-1001117396121"
 
@@ -32,7 +43,7 @@ func init() {
 }
 
 func GetPics() error {
-	statusCode, body, err := fasthttp.Get(nil, domain+"/get")
+	statusCode, body, err := fasthttp.Get(nil, domain+"/get?type=jpg")
 	if err != nil {
 		log.Println(err.Error())
 		return err
@@ -55,7 +66,7 @@ func getpicuris(count int) []*tb.Photo {
 		GetPics()
 	}
 	for i := 0; i < count; i++ {
-		uri := fmt.Sprintf(domain+"/static/%s", pics[0])
+		uri := fmt.Sprintf(domain+"/%s?size=500", strings.TrimPrefix(pics[0].Path, "./"))
 		res = append(res, &tb.Photo{File: tb.FromURL(uri)})
 		pics = pics[1:]
 		log.Println(uri)
@@ -77,7 +88,30 @@ func main() {
 		log.Fatal(err)
 		return
 	}
-	b.Handle("/hello", func(m *tb.Message) {
+	var (
+		menu    = &tb.ReplyMarkup{ResizeReplyKeyboard: true}
+		hello   = menu.Text("/hello")
+		reset   = menu.Text("/reset")
+		count   = menu.Text("/count")
+		cache   = menu.Text("/cache")
+		Weather = menu.Text("/weather")
+	)
+	menu.Reply(
+		menu.Row(hello),
+		menu.Row(reset),
+		menu.Row(count),
+		menu.Row(cache),
+		menu.Row(Weather),
+	)
+
+	b.Handle("/start", func(m *tb.Message) {
+		if !m.Private() {
+			return
+		}
+		b.Send(m.Sender, "Hello!", menu)
+	})
+
+	b.Handle(&hello, func(m *tb.Message) {
 		switch m.Payload {
 		case "bitch":
 			var cfg tb.Album
@@ -96,7 +130,7 @@ func main() {
 		}
 	})
 
-	b.Handle("/reset", func(m *tb.Message) {
+	b.Handle(&reset, func(m *tb.Message) {
 		err := GetPics()
 		if err != nil {
 			_, err = b.Send(m.Chat, fmt.Sprintf("重新拉取失败:%s", err.Error()))
@@ -108,22 +142,22 @@ func main() {
 		}
 	})
 
-	b.Handle("/count", func(m *tb.Message) {
-		_, body, _ := fasthttp.Get(nil, domain+"/getcount")
+	b.Handle(&count, func(m *tb.Message) {
+		_, body, _ := fasthttp.Get(nil, domain+"/count")
 		_, err = b.Send(m.Chat, string(body))
 		if err != nil {
 			fmt.Println(err.Error())
 		}
 	})
 
-	b.Handle("/cache", func(m *tb.Message) {
-		_, err = b.Send(m.Chat, len(pics))
+	b.Handle(&cache, func(m *tb.Message) {
+		_, err = b.Send(m.Chat, fmt.Sprintf("当前缓存区，还有%d张图片", len(pics)))
 		if err != nil {
 			fmt.Println(err.Error())
 		}
 	})
 
-	b.Handle("/weather", func(m *tb.Message) {
+	b.Handle(&Weather, func(m *tb.Message) {
 		code := 101250105
 		var err error
 		if strings.TrimSpace(m.Payload) != "" {
@@ -149,6 +183,13 @@ func main() {
 
 		if _, err = b.Send(m.Chat, md, &tb.SendOptions{ParseMode: tb.ModeMarkdownV2}); err != nil {
 			log.Println(err.Error())
+		}
+	})
+
+	b.Handle("/help", func(m *tb.Message) {
+		_, err = b.Send(m.Chat, fmt.Sprintf("%s bitch\n%s\n%s\n%s\n%s", hello.Text, reset.Text, count.Text, cache.Text, Weather.Text))
+		if err != nil {
+			fmt.Println(err.Error())
 		}
 	})
 
