@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"log"
+	"github.com/go-resty/resty/v2"
 	"net/http"
+	"strconv"
 	"time"
 
-	"github.com/valyala/fasthttp"
+	browser "github.com/eddycjy/fake-useragent"
 )
 
-type WeatherModel struct {
+type WeatherResponse struct {
 	Nameen         string `json:"nameen"`
 	Cityname       string `json:"cityname"`
 	City           string `json:"city"`
@@ -37,19 +38,32 @@ type WeatherModel struct {
 	Date           string `json:"date"`
 }
 
-func Get(city string) *WeatherModel {
-	statusCode, body, err := fasthttp.Get(nil, fmt.Sprintf("http://d1.weather.com.cn/sk_2d/%s.html?_=%d", city, time.Now().Unix()))
+func Get(city string) (*WeatherResponse, error) {
+	url := fmt.Sprintf("http://d1.weather.com.cn/sk_2d/%s.html", city)
+	client := resty.New()
+
+	client.SetAllowGetMethodPayload(true)
+	resp, err := client.R().
+		SetQueryParams(map[string]string{
+			"_": strconv.FormatInt(time.Now().Unix(), 10),
+		}).
+		SetHeaders(map[string]string{
+			"Referer":    "http://www.weather.com.cn/",
+			"user-agent": browser.Random(),
+		}).
+		SetBody(`{"request":"test"}`).
+		Get(url)
 	if err != nil {
-		log.Println(err.Error())
-		return nil
+		return nil, err
 	}
-	if statusCode != http.StatusOK {
-		return nil
+	if resp.StatusCode() != http.StatusOK {
+		return nil, fmt.Errorf("请求失败，%d", resp.StatusCode())
 	}
+	body := resp.Body()
 	body = bytes.TrimPrefix(body, []byte("var dataSK="))
-	var data WeatherModel
+	var data WeatherResponse
 	if err := json.Unmarshal(body, &data); err != nil {
-		return nil
+		return nil, err
 	}
-	return &data
+	return &data, nil
 }

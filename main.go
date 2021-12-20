@@ -1,37 +1,31 @@
 package main
 
 import (
-	"encoding/json"
+	"bytes"
 	"fmt"
+	"image"
+	"io"
+	"io/ioutil"
 	"log"
 	rand_ "math/rand"
-	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"strconv"
 	"strings"
 	"syscall"
-	"telegram-bot/weather"
+	"telegram-bot/utils/icp"
+	"telegram-bot/utils/weather"
 	"time"
 
+	"golang.org/x/time/rate"
+
+	"github.com/disintegration/imaging"
 	"github.com/robfig/cron/v3"
-	"github.com/valyala/fasthttp"
 	tb "gopkg.in/tucnak/telebot.v2"
 )
 
-var domain = "https://imgs.zhxiao1124.cn"
-
-type piclist struct {
-	Path     string `json:"path"`
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Format   string `json:"format"`
-	MIMEType string `json:"mimeType"`
-	Width    int64  `json:"width"`
-	Height   int64  `json:"height"`
-}
-
-var pics []piclist
+var pics []string
 
 const ChatID = "-1001117396121"
 
@@ -43,16 +37,10 @@ func init() {
 }
 
 func GetPics() error {
-	statusCode, body, err := fasthttp.Get(nil, domain+"/get?type=jpg")
+	pics = pics[0:0]
+	err := GetAllFile("./dist", &pics)
 	if err != nil {
-		log.Println(err.Error())
 		return err
-	}
-	if statusCode == http.StatusOK {
-		if err := json.Unmarshal(body, &pics); err != nil {
-			log.Println(err.Error())
-			return err
-		}
 	}
 	rand_.Shuffle(len(pics), func(i, j int) {
 		pics[i], pics[j] = pics[j], pics[i]
@@ -62,14 +50,27 @@ func GetPics() error {
 
 func getpicuris(count int) []*tb.Photo {
 	var res []*tb.Photo
-	if len(pics) == 0 {
+	if len(pics) == 0 || len(pics) < count {
 		GetPics()
 	}
 	for i := 0; i < count; i++ {
-		uri := fmt.Sprintf(domain+"/%s?size=500", strings.TrimPrefix(pics[0].Path, "./"))
-		res = append(res, &tb.Photo{File: tb.FromURL(uri)})
-		pics = pics[1:]
-		log.Println(uri)
+		var src string
+		for {
+			if len(pics) == 0 {
+				if err := GetPics(); err != nil {
+					return nil
+				}
+			}
+			src = pics[0]
+			pics = pics[1:]
+			if info, err := os.Stat(src); err == nil {
+				if info.Size() < 5*1000*1000 {
+					break
+				}
+			}
+		}
+		var fs tb.File = tb.FromDisk(src)
+		res = append(res, &tb.Photo{File: fs})
 	}
 	return res
 }
@@ -95,6 +96,7 @@ func main() {
 		count   = menu.Text("/count")
 		cache   = menu.Text("/cache")
 		Weather = menu.Text("/weather")
+		beian   = menu.Text("/icp")
 	)
 	menu.Reply(
 		menu.Row(hello),
@@ -102,25 +104,45 @@ func main() {
 		menu.Row(count),
 		menu.Row(cache),
 		menu.Row(Weather),
+		menu.Row(beian),
 	)
 
 	b.Handle("/start", func(m *tb.Message) {
 		if !m.Private() {
 			return
 		}
-		b.Send(m.Sender, "Hello!", menu)
+		_, err := b.Send(m.Sender, "Hello!", menu)
+		if err != nil {
+			fmt.Println(err.Error())
+		}
 	})
+
+	r := rate.Every(70 * time.Second)
+	n := 4
+	limit := rate.NewLimiter(r, 20/n-1)
 
 	b.Handle(&hello, func(m *tb.Message) {
 		switch m.Payload {
 		case "bitch":
-			var cfg tb.Album
-			for _, v := range getpicuris(4) {
-				cfg = append(cfg, v)
-			}
-			_, err = b.SendAlbum(m.Chat, cfg)
-			if err != nil {
-				fmt.Println(err.Error())
+			// if strconv.FormatInt(m.Chat.ID, 10) != ChatID || limit.Allow() {
+			if limit.Allow() {
+				fmt.Println(time.Now().Format(time.RFC3339))
+				var cfg tb.Album
+				var _pics = getpicuris(n)
+				for _, v := range _pics {
+					cfg = append(cfg, v)
+				}
+				_, err = b.SendAlbum(m.Chat, cfg)
+				if err != nil {
+					_log := fmt.Sprintf("异常:%s\n", err.Error())
+					fmt.Print(_log)
+					_, _ = b.Send(m.Chat, fmt.Sprintf("发送失败:%s", err.Error()))
+				}
+			} else {
+				_, err = b.Send(m.Chat, "哇噻!!! 你发得好快哟")
+				if err != nil {
+					fmt.Printf("异常:%s\n", err.Error())
+				}
 			}
 		default:
 			_, err = b.Send(m.Chat, getpicuris(1)[0])
@@ -143,8 +165,9 @@ func main() {
 	})
 
 	b.Handle(&count, func(m *tb.Message) {
-		_, body, _ := fasthttp.Get(nil, domain+"/count")
-		_, err = b.Send(m.Chat, string(body))
+		var list []string
+		GetAllFile("./dist", &list)
+		_, err = b.Send(m.Chat, fmt.Sprintf("一共有%d张图片", len(list)))
 		if err != nil {
 			fmt.Println(err.Error())
 		}
@@ -157,7 +180,44 @@ func main() {
 		}
 	})
 
-	b.Handle(&Weather, func(m *tb.Message) {
+	b.Handle(&beian, func(m *tb.Message) {
+		name := strings.TrimSpace(m.Payload)
+		if name == "" {
+			_, err = b.Send(m.Chat, "查询失败")
+			if err != nil {
+				log.Println(err.Error())
+			}
+			return
+		}
+		resp, err := icp.BeiAn(name)
+		if err != nil {
+			_, err = b.Send(m.Chat, "查询失败:%s", err.Error())
+			if err != nil {
+				log.Println(err.Error())
+			}
+			return
+		}
+		md := fmt.Sprintf("查询：%s 共%d条记录：\n\n", resp.UnitName, resp.Total)
+		for _, item := range resp.List {
+			md += fmt.Sprintf("域名主办方：%s\n", item.UnitName)
+			md += fmt.Sprintf("域名：%s\n", item.Domain)
+			md += fmt.Sprintf("域名类型：%s\n", item.NatureName)
+			md += fmt.Sprintf("网站名称：%s\n", item.ServiceName)
+			md += fmt.Sprintf("备案许可证号：%s\n", item.MainLicence)
+			md += fmt.Sprintf("网站备案号：%s\n", item.ServiceLicence)
+			md += fmt.Sprintf("网站前置审批项：%s\n", item.ContentTypeName)
+			md += fmt.Sprintf("是否限制接入：%s\n", item.LimitAccess)
+			md += fmt.Sprintf("审核通过日期：%s\n", item.UpdateRecordTime)
+			md += fmt.Sprintf("\n")
+		}
+		md += "查询完毕"
+		_, err = b.Send(m.Chat, md, &tb.SendOptions{ParseMode: tb.ModeHTML})
+		if err != nil {
+			log.Println(err.Error())
+		}
+	})
+
+	b.Handle("/weather", func(m *tb.Message) {
 		code := 101250105
 		var err error
 		if strings.TrimSpace(m.Payload) != "" {
@@ -171,17 +231,18 @@ func main() {
 			code = _code
 		}
 
-		data := weather.Get(strconv.Itoa(code))
-		if data == nil {
-			if _, err = b.Send(m.Chat, "查询失败"); err != nil {
+		data, err := weather.Get(strconv.Itoa(code))
+		if err != nil {
+			_, err = b.Send(m.Chat, "查询失败")
+			if err != nil {
 				log.Println(err.Error())
 			}
 			return
 		}
 		md := fmt.Sprintf("地区:%s\n时间:%s %s\n气温:%s℃\n相对湿度:%s\n天气:%s\n风向:%s\n风速:%s\npm2\\.5:%s",
 			data.Cityname, strings.ReplaceAll(strings.ReplaceAll(data.Date, "(", "\\("), ")", "\\)"), data.Time, data.Temp, data.SD, data.Weather, data.Wd, data.Ws, data.AqiPm25)
-
-		if _, err = b.Send(m.Chat, md, &tb.SendOptions{ParseMode: tb.ModeMarkdownV2}); err != nil {
+		_, err = b.Send(m.Chat, md, &tb.SendOptions{ParseMode: tb.ModeMarkdownV2})
+		if err != nil {
 			log.Println(err.Error())
 		}
 	})
@@ -195,13 +256,17 @@ func main() {
 
 	b.Handle(tb.OnText, func(m *tb.Message) {
 		switch m.Text {
-		case "":
-
-		default:
-			_, err = b.Send(m.Chat, getpicuris(1)[0])
+		case "我爱学习", "来点涩图":
+			var cfg tb.Album
+			var _pics = getpicuris(4)
+			for _, v := range _pics {
+				cfg = append(cfg, v)
+			}
+			_, err = b.SendAlbum(m.Chat, cfg)
 			if err != nil {
 				fmt.Println(err.Error())
 			}
+		default:
 		}
 	})
 
@@ -213,12 +278,12 @@ func main() {
 		// channel posts only
 	})
 
-	b.Handle(tb.OnQuery, func(q *tb.Query) {
+	b.Handle(tb.OnQuery, func(m *tb.Message) {
 		// incoming inline queries
 	})
 
-	c.AddJob("@hourly", sendPic{Num: 4, b: b, chatId: ChatID})
-	c.AddJob("30 18 * * 1-5", sendPic{Num: 6, b: b, chatId: ChatID})
+	c.AddJob("0 9-17 * * *", sendPic{Num: 9, b: b, chatId: ChatID})
+	c.AddJob("30 18 * * *", sendPic{Num: 9, b: b, chatId: ChatID})
 	c.Start()
 	go b.Start()
 	fmt.Println("程序启动")
@@ -245,8 +310,52 @@ func (s sendPic) Run() {
 	for _, v := range getpicuris(s.Num) {
 		cfg = append(cfg, v)
 	}
-	_, err = s.b.SendAlbum(c_, cfg)
+	err = Retry(3, 500, func() error {
+		_, _err := s.b.SendAlbum(c_, cfg)
+		return _err
+	})
 	if err != nil {
-		fmt.Println(err.Error())
+		_log := fmt.Sprintf("异常:%s\n", err.Error())
+		fmt.Print(_log)
 	}
+}
+
+func Retry(attempts int, sleep time.Duration, f func() error) (err error) {
+	for i := 0; ; i++ {
+		err = f()
+		if err == nil {
+			return
+		}
+		if i >= (attempts - 1) {
+			break
+		}
+		time.Sleep(sleep)
+	}
+	return fmt.Errorf("after %d attempts, last error: %v", attempts, err)
+}
+
+func Size(r io.Reader, size int) (out *bytes.Buffer, err error) {
+	src, _, err := image.Decode(r)
+	if err != nil {
+		return nil, err
+	}
+	src = imaging.Resize(src, size, 0, imaging.Lanczos)
+	out = &bytes.Buffer{}
+	err = imaging.Encode(out, src, imaging.JPEG)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func GetAllFile(pathname string, list *[]string) error {
+	rd, err := ioutil.ReadDir(pathname)
+	for _, fi := range rd {
+		if fi.IsDir() {
+			GetAllFile(path.Join(pathname, fi.Name()), list)
+		} else {
+			*list = append(*list, path.Join(pathname, fi.Name()))
+		}
+	}
+	return err
 }
